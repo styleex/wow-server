@@ -3,42 +3,36 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
-	"wow-server/pkg"
+	"time"
+	"wow-server/pkg/cites_storage"
+	"wow-server/pkg/hashcash"
+	"wow-server/pkg/protocol"
 )
 
-type RequestMessage struct {
-	// Only "GET" accepted
-	Method string `json:"version"`
-}
-
-type ChallengeMessage struct {
-	Token []byte `json:"token"`
-}
-
-type ChallengeResponseMessage struct {
-	Nonce uint64 `json:"nonce"`
-}
-
-type PayloadResponse struct {
-	Payload string `json:"payload"`
-}
-
 type Server struct {
-	ddosProtector pkg.HashCash
+	citesStorage  *cites_storage.Storage
+	ddosProtector *hashcash.HashCash
 }
 
-func (s *Server) Listen(addr string) {
+func NewServer(ddosComplexityLevel int) *Server {
+	return &Server{
+		citesStorage:  cites_storage.Load(),
+		ddosProtector: hashcash.NewHashCash(ddosComplexityLevel),
+	}
+}
+
+func (s *Server) ListenAndServe(addr string) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Panicf("Failed to listen: %s", err)
+		return err
 	}
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			// TODO: Check temporary errors?
-			log.Panicf("Failed to accept connection: %s", err)
+			return err
 		}
 
 		go func() {
@@ -52,8 +46,9 @@ func (s *Server) Listen(addr string) {
 func (s *Server) handleConn(conn net.Conn) error {
 	defer conn.Close()
 
-	var request RequestMessage
-	if err := pkg.ReadData(conn, &request); err != nil {
+	// 1. Read and verify request
+	var request protocol.RequestMessage
+	if err := protocol.ReadMessage(conn, &request); err != nil {
 		return err
 	}
 
@@ -61,13 +56,15 @@ func (s *Server) handleConn(conn net.Conn) error {
 		return fmt.Errorf("invalid method: %s", request.Method)
 	}
 
-	token := s.ddosProtector.NewToken()
-	if err := pkg.WriteData(conn, ChallengeMessage{token}); err != nil {
+	// 2. Send challenge
+	token := s.ddosProtector.NewToken(conn.RemoteAddr())
+	if err := protocol.WriteMessage(conn, protocol.ChallengeMessage{Token: token, ComplexityLevel: s.ddosProtector.ComplexityLevel}); err != nil {
 		return err
 	}
 
-	var challengeResponse ChallengeResponseMessage
-	if err := pkg.ReadData(conn, &challengeResponse); err != nil {
+	// 3. Read and verify challenge response
+	var challengeResponse protocol.ChallengeResponseMessage
+	if err := protocol.ReadMessage(conn, &challengeResponse); err != nil {
 		return err
 	}
 
@@ -75,7 +72,8 @@ func (s *Server) handleConn(conn net.Conn) error {
 		return fmt.Errorf("nonce not valid")
 	}
 
-	if err := pkg.WriteData(conn, PayloadResponse{""}); err != nil {
+	// 4. Write payload
+	if err := protocol.WriteMessage(conn, protocol.PayloadResponseMessage{Payload: s.citesStorage.RandomCite()}); err != nil {
 		return err
 	}
 
@@ -83,8 +81,11 @@ func (s *Server) handleConn(conn net.Conn) error {
 }
 
 func main() {
-	server := Server{}
+	rand.Seed(time.Now().UnixMilli())
+	server := NewServer(22)
 
 	fmt.Println("Listen on :8081")
-	server.Listen(":8081")
+	if err := server.ListenAndServe(":8081"); err != nil {
+		log.Fatalf("Failed to serve: %s", err)
+	}
 }

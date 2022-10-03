@@ -2,14 +2,19 @@ package main
 
 import (
 	"log"
+	"net"
 	"time"
-	"wow-server/pkg"
+	"wow-server/pkg/hashcash"
 )
 
 func main() {
-	pow := pkg.NewHashCash(23)
-	token := pow.NewToken()
-	log.Printf("%x", token)
+	pow := hashcash.NewHashCash(23)
+
+	token := pow.NewToken(&net.IPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Zone: "",
+	})
+	log.Printf("token: %s (%x)", string(token), token)
 
 	t1 := time.Now()
 	nonce, err := pow.Bruteforce(token)
